@@ -25,20 +25,23 @@ LIGI_NAZWY = {
 
 @st.cache_data(ttl=60)
 def pobierz_mecze(data_str):
-    # Parametryzujemy URL tak, aby API zwracało mecze dla wybranej daty
     url = f"http://api.football-data.org/v4/matches?dateFrom={data_str}&dateTo={data_str}"
     headers = {"X-Auth-Token": API_KEY}
     response = requests.get(url, headers=headers)
     
     if response.status_code == 200:
         return response.json().get('matches', [])
+    elif response.status_code == 429:
+        # Kod 429 oznacza, że przekroczono darmowy limit API
+        return "LIMIT"
     return []
 
 @st.cache_data(ttl=86400)
 def pobierz_wszystkie_statystyki():
     stats = {}
     for api_kod, csv_kod in LIGI_KODY.items():
-        url = f"https://www.football-data.co.uk/mmz4281/2324/{csv_kod}.csv"
+        # UWAGA: Uaktualniono na bieżący sezon 25/26 (kod 2526)
+        url = f"https://www.football-data.co.uk/mmz4281/2526/{csv_kod}.csv"
         try:
             df = pd.read_csv(url)
             stats[api_kod] = df[['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']]
@@ -71,7 +74,6 @@ def oblicz_poissona(home, away, df):
 
 st.title("📅 Dashboard Piłkarski: Wyniki i Typy")
 
-# Dodajemy interaktywny wybór daty
 col1, col2 = st.columns([1, 2])
 with col1:
     wybrana_data = st.date_input("Wybierz datę do analizy:", datetime.date.today())
@@ -84,95 +86,105 @@ with st.spinner('Pobieranie aktualnych wyników i statystyk...'):
     wszystkie_mecze = pobierz_mecze(data_str)
     stats = pobierz_wszystkie_statystyki()
 
-mecze_top5 = [m for m in wszystkie_mecze if m['competition']['code'] in LIGI_KODY.keys()]
+# Sprawdzanie, czy nie uderzyliśmy w ścianę (limit zapytań)
+if wszystkie_mecze == "LIMIT":
+    st.error("⚠️ Przekroczono limit API (10 kliknięć / minutę). Posiadasz darmowe konto. Odczekaj około 60 sekund i kliknij przycisk odświeżenia poniżej.")
+    if st.button("🔄 Odśwież i pobierz ponownie"):
+        st.cache_data.clear()
+        st.rerun()
 
-if not mecze_top5:
-    st.info(f"Dnia {data_wyswietlana} nie ma żadnych meczów w topowych 5 ligach europejskich (lub trwa przerwa reprezentacyjna).")
+elif not wszystkie_mecze:
+    st.info(f"Dnia {data_wyswietlana} nie ma żadnych meczów w topowych 5 ligach europejskich.")
 else:
-    mecze_po_lidze = {}
-    for m in mecze_top5:
-        kod_ligi = m['competition']['code']
-        if kod_ligi not in mecze_po_lidze:
-            mecze_po_lidze[kod_ligi] = []
-        mecze_po_lidze[kod_ligi].append(m)
+    mecze_top5 = [m for m in wszystkie_mecze if m['competition']['code'] in LIGI_KODY.keys()]
+    
+    if not mecze_top5:
+         st.info(f"Dnia {data_wyswietlana} odbywają się mecze, ale nie w ramach topowych 5 lig Europy.")
+    else:
+        mecze_po_lidze = {}
+        for m in mecze_top5:
+            kod_ligi = m['competition']['code']
+            if kod_ligi not in mecze_po_lidze:
+                mecze_po_lidze[kod_ligi] = []
+            mecze_po_lidze[kod_ligi].append(m)
 
-    for kod_ligi, lista_meczow in mecze_po_lidze.items():
-        st.write("")
-        st.subheader(LIGI_NAZWY[kod_ligi])
-        
-        for mecz in lista_meczow:
-            gosp = mecz['homeTeam']['shortName']
-            gosc = mecz['awayTeam']['shortName']
-            status = mecz['status'] # SCHEDULED, IN_PLAY, PAUSED, FINISHED
-            czas_startu = mecz['utcDate'][11:16]
+        for kod_ligi, lista_meczow in mecze_po_lidze.items():
+            st.write("")
+            st.subheader(LIGI_NAZWY[kod_ligi])
             
-            # Pobieranie wyników, jeśli mecz trwa lub się zakończył
-            gole_dom = mecz['score']['fullTime']['home']
-            gole_wyjazd = mecz['score']['fullTime']['away']
-            
-            p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats[kod_ligi])
-            
-            typ_modelu = None
-            if p_h is not None:
-                if p_h > p_d and p_h > p_a: typ_modelu = '1'
-                elif p_a > p_h and p_a > p_d: typ_modelu = '2'
-                else: typ_modelu = 'X'
-
-            srodek_ekranu = f"<div style='text-align: center; color: gray; margin-top: 5px;'>{czas_startu}</div>"
-            znaczek_trafnosci = ""
-
-            if status in ['IN_PLAY', 'PAUSED', 'FINISHED'] and gole_dom is not None and gole_wyjazd is not None:
-                if gole_dom > gole_wyjazd: obecny_wynik = '1'
-                elif gole_dom < gole_wyjazd: obecny_wynik = '2'
-                else: obecny_wynik = 'X'
+            for mecz in lista_meczow:
+                gosp = mecz['homeTeam']['shortName']
+                gosc = mecz['awayTeam']['shortName']
+                status = mecz['status'] 
+                czas_startu = mecz['utcDate'][11:16]
                 
-                if status == 'FINISHED':
-                    etykieta = "<span style='color: gray; font-size: 12px;'>Koniec</span>"
-                    if typ_modelu == obecny_wynik:
-                        znaczek_trafnosci = "✅ <span style='color: #4CAF50; font-size: 14px;'>Typ Trafiony!</span>"
-                    else:
-                        znaczek_trafnosci = "❌ <span style='color: #F44336; font-size: 14px;'>Typ Nietrafiony</span>"
-                else:
-                    etykieta = "<span style='color: red; font-size: 12px; font-weight: bold;'>Na żywo</span>"
-                    if typ_modelu == obecny_wynik:
-                        znaczek_trafnosci = "⏳ <span style='color: #FFC107; font-size: 14px;'>Typ aktualnie wchodzi...</span>"
-                    else:
-                        znaczek_trafnosci = "⏳ <span style='color: gray; font-size: 14px;'>Typ na razie przegrywa...</span>"
-
-                srodek_ekranu = f"""
-                <div style='text-align: center;'>
-                    <span style='font-size: 24px; font-weight: bold;'>{gole_dom} - {gole_wyjazd}</span><br>
-                    {etykieta}
-                </div>
-                """
-
-            with st.container():
-                col1, col2, col3 = st.columns([3, 2, 3])
-                with col1:
-                    st.markdown(f"<h4 style='text-align: right;'>{gosp}</h4>", unsafe_allow_html=True)
-                with col2:
-                    st.markdown(srodek_ekranu, unsafe_allow_html=True)
-                with col3:
-                    st.markdown(f"<h4>{gosc}</h4>", unsafe_allow_html=True)
-                    
+                # Bezpieczne pobieranie wyników (czasami w API mecz ma status inny niż finished, ale nie ma goli)
+                gole_dom = mecz['score']['fullTime'].get('home') if mecz.get('score') and mecz['score'].get('fullTime') else None
+                gole_wyjazd = mecz['score']['fullTime'].get('away') if mecz.get('score') and mecz['score'].get('fullTime') else None
+                
+                p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats[kod_ligi])
+                
+                typ_modelu = None
                 if p_h is not None:
-                    waga_1 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '1' else ""
-                    waga_x = "font-weight: bold; text-decoration: underline;" if typ_modelu == 'X' else ""
-                    waga_2 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '2' else ""
+                    if p_h > p_d and p_h > p_a: typ_modelu = '1'
+                    elif p_a > p_h and p_a > p_d: typ_modelu = '2'
+                    else: typ_modelu = 'X'
 
-                    pasek_html = f"""
-                    <div style='display: flex; justify-content: space-between; align-items: center; background-color: #1e1e1e; color: white; padding: 10px; border-radius: 8px; margin-bottom: 25px;'>
-                        <div style='display: flex; gap: 20px; font-size: 16px;'>
-                            <div style='{waga_1}'><b>1:</b> <span style='color: #4CAF50;'>{p_h*100:.0f}%</span></div>
-                            <div style='{waga_x}'><b>X:</b> <span style='color: #FFC107;'>{p_d*100:.0f}%</span></div>
-                            <div style='{waga_2}'><b>2:</b> <span style='color: #F44336;'>{p_a*100:.0f}%</span></div>
-                        </div>
-                        <div>{znaczek_trafnosci}</div>
+                srodek_ekranu = f"<div style='text-align: center; color: gray; margin-top: 5px;'>{czas_startu}</div>"
+                znaczek_trafnosci = ""
+
+                if status in ['IN_PLAY', 'PAUSED', 'FINISHED'] and gole_dom is not None and gole_wyjazd is not None:
+                    if gole_dom > gole_wyjazd: obecny_wynik = '1'
+                    elif gole_dom < gole_wyjazd: obecny_wynik = '2'
+                    else: obecny_wynik = 'X'
+                    
+                    if status == 'FINISHED':
+                        etykieta = "<span style='color: gray; font-size: 12px;'>Koniec</span>"
+                        if typ_modelu == obecny_wynik:
+                            znaczek_trafnosci = "✅ <span style='color: #4CAF50; font-size: 14px;'>Typ Trafiony!</span>"
+                        else:
+                            znaczek_trafnosci = "❌ <span style='color: #F44336; font-size: 14px;'>Typ Nietrafiony</span>"
+                    else:
+                        etykieta = "<span style='color: red; font-size: 12px; font-weight: bold;'>Na żywo</span>"
+                        if typ_modelu == obecny_wynik:
+                            znaczek_trafnosci = "⏳ <span style='color: #FFC107; font-size: 14px;'>Typ aktualnie wchodzi...</span>"
+                        else:
+                            znaczek_trafnosci = "⏳ <span style='color: gray; font-size: 14px;'>Typ na razie przegrywa...</span>"
+
+                    srodek_ekranu = f"""
+                    <div style='text-align: center;'>
+                        <span style='font-size: 24px; font-weight: bold;'>{gole_dom} - {gole_wyjazd}</span><br>
+                        {etykieta}
                     </div>
                     """
-                    st.markdown(pasek_html, unsafe_allow_html=True)
-                else:
-                    st.markdown("""
-                    <div style='text-align: center; font-size: 12px; color: gray; margin-bottom: 25px;'>
-                        Brak statystyk dla tych drużyn. Wymagane mapowanie nazw.
-                    </div>""", unsafe_allow_html=True)
+
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 3])
+                    with col1:
+                        st.markdown(f"<h4 style='text-align: right;'>{gosp}</h4>", unsafe_allow_html=True)
+                    with col2:
+                        st.markdown(srodek_ekranu, unsafe_allow_html=True)
+                    with col3:
+                        st.markdown(f"<h4>{gosc}</h4>", unsafe_allow_html=True)
+                        
+                    if p_h is not None:
+                        waga_1 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '1' else ""
+                        waga_x = "font-weight: bold; text-decoration: underline;" if typ_modelu == 'X' else ""
+                        waga_2 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '2' else ""
+
+                        pasek_html = f"""
+                        <div style='display: flex; justify-content: space-between; align-items: center; background-color: #1e1e1e; color: white; padding: 10px; border-radius: 8px; margin-bottom: 25px;'>
+                            <div style='display: flex; gap: 20px; font-size: 16px;'>
+                                <div style='{waga_1}'><b>1:</b> <span style='color: #4CAF50;'>{p_h*100:.0f}%</span></div>
+                                <div style='{waga_x}'><b>X:</b> <span style='color: #FFC107;'>{p_d*100:.0f}%</span></div>
+                                <div style='{waga_2}'><b>2:</b> <span style='color: #F44336;'>{p_a*100:.0f}%</span></div>
+                            </div>
+                            <div>{znaczek_trafnosci}</div>
+                        </div>
+                        """
+                        st.markdown(pasek_html, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                        <div style='text-align: center; font-size: 12px; color: gray; margin-bottom: 25px;'>
+                            Brak statystyk dla tych drużyn. Wymagane mapowanie nazw.
+                        </div>""", unsafe_allow_html=True)
