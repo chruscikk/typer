@@ -1,55 +1,65 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from scipy.stats import poisson
 
-st.set_page_config(page_title="Auto-Typowanie 2026", layout="wide")
+st.set_page_config(page_title="Pro Typy Piłkarskie", page_icon="⚽", layout="wide")
 
-# Mapowanie lig na FBRef (identyfikatory w ich URL)
-LIGI_URLS = {
-    "Premier League": "9/schedule/Premier-League-Scores-and-Fixtures",
-    "La Liga": "12/schedule/La-Liga-Scores-and-Fixtures",
-    "Bundesliga": "20/schedule/Bundesliga-Scores-and-Fixtures",
-    "Serie A": "11/schedule/Serie-A-Scores-and-Fixtures",
-    "Ligue 1": "13/schedule/Ligue-1-Scores-and-Fixtures"
+# Bezpieczne pobieranie klucza API z ustawień Streamlit
+try:
+    API_KEY = st.secrets["API_KEY"]
+except KeyError:
+    st.error("Brak klucza API! Skonfiguruj 'Secrets' w ustawieniach Streamlit.")
+    st.stop()
+
+# Konfiguracja lig (Kody dla API oraz kody dla CSV)
+LIGI = {
+    "Premier League": {"api": "PL", "csv": "E0"},
+    "La Liga": {"api": "PD", "csv": "SP1"},
+    "Bundesliga": {"api": "BL1", "csv": "D1"},
+    "Serie A": {"api": "SA", "csv": "I1"},
+    "Ligue 1": {"api": "FL1", "csv": "F1"}
 }
 
 # --- FUNKCJE DANYCH ---
 
-@st.cache_data(ttl=3600)
-def pobierz_terminarz(path):
-    url = f"https://fbref.com/en/comps/{path}"
-    try:
-        # Udajemy przeglądarkę, żeby nas nie zablokowali
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        tables = pd.read_html(response.text)
-        df = tables[0] # Zazwyczaj pierwsza tabela to terminarz
-        # Filtrujemy tylko nadchodzące mecze (te bez wyniku)
-        nadchodzace = df[df['Score'].isna() & df['Home'].notna()]
-        return nadchodzace[['Date', 'Time', 'Home', 'Away']].head(10) # Bierzemy 10 najbliższych
-    except:
-        return pd.DataFrame()
+@st.cache_data(ttl=3600) # Odświeżaj terminarz raz na godzinę
+def pobierz_terminarz_api(kod_api):
+    url = f"http://api.football-data.org/v4/competitions/{kod_api}/matches?status=SCHEDULED"
+    headers = {"X-Auth-Token": API_KEY}
+    
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        dane = response.json()
+        mecze = []
+        for match in dane.get('matches', [])[:10]: # Bierzemy 10 najbliższych
+            mecze.append({
+                'Data': match['utcDate'][:10],
+                'Gospodarz': match['homeTeam']['shortName'], # shortName daje lepsze dopasowanie do statystyk
+                'Gość': match['awayTeam']['shortName']
+            })
+        return pd.DataFrame(mecze)
+    return pd.DataFrame()
 
-@st.cache_data(ttl=86400)
-def pobierz_statystyki_historyczne(kod_ligi):
-    # Dane do modelu pobieramy z football-data.co.uk (stabilne CSV)
-    url = f"https://www.football-data.co.uk/mmz4281/2324/{kod_ligi}.csv"
+@st.cache_data(ttl=86400) # Statystyki raz na dzień
+def pobierz_statystyki(kod_csv):
+    url = f"https://www.football-data.co.uk/mmz4281/2324/{kod_csv}.csv"
     df = pd.read_csv(url)
     return df[['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']]
 
-def model_poisson(home, away, df_stats):
-    # Mapowanie nazw (FBRef vs Football-Data może wymagać drobnych korekt, 
-    # ale dla uproszczenia zakładamy zgodność lub manualny wybór)
+def oblicz_poissona(home, away, df):
     try:
-        avg_h = df_stats['FTHG'].mean()
-        avg_a = df_stats['FTAG'].mean()
+        avg_h = df['FTHG'].mean()
+        avg_a = df['FTAG'].mean()
         
-        h_at = df_stats[df_stats['HomeTeam'] == home]['FTHG'].mean() / avg_h
-        h_def = df_stats[df_stats['HomeTeam'] == home]['FTAG'].mean() / avg_a
-        a_at = df_stats[df_stats['AwayTeam'] == away]['FTAG'].mean() / avg_a
-        a_def = df_stats[df_stats['AwayTeam'] == away]['FTHG'].mean() / avg_h
+        # Zabezpieczenie na wypadek, gdy nazwa z API różni się od tej z CSV
+        if home not in df['HomeTeam'].values or away not in df['AwayTeam'].values:
+            return None, None, None
+
+        h_at = df[df['HomeTeam'] == home]['FTHG'].mean() / avg_h
+        h_def = df[df['HomeTeam'] == home]['FTAG'].mean() / avg_a
+        a_at = df[df['AwayTeam'] == away]['FTAG'].mean() / avg_a
+        a_def = df[df['AwayTeam'] == away]['FTHG'].mean() / avg_h
         
         exp_h = h_at * a_def * avg_h
         exp_a = a_at * h_def * avg_a
@@ -66,40 +76,37 @@ def model_poisson(home, away, df_stats):
         return None, None, None
 
 # --- UI ---
-st.title("🚀 Automatyczny Terminarz i Typy")
+st.title("📅 Terminarz i Typy (Powered by API)")
 
-liga_nazwa = st.sidebar.selectbox("Wybierz ligę:", list(LIGI_URLS.keys()))
-kod_fd = {"Premier League":"E0", "La Liga":"SP1", "Bundesliga":"D1", "Serie A":"I1", "Ligue 1":"F1"}[liga_nazwa]
+wybrana_liga = st.sidebar.selectbox("Wybierz ligę:", list(LIGI.keys()))
+kody = LIGI[wybrana_liga]
 
-with st.spinner('Pobieranie terminarza z FBRef...'):
-    terminarz = pobierz_terminarz(LIGI_URLS[liga_nazwa])
-    stats = pobierz_statystyki_historyczne(kod_fd)
+with st.spinner('Pobieranie danych z serwerów...'):
+    terminarz = pobierz_terminarz_api(kody['api'])
+    stats = pobierz_statystyki(kody['csv'])
 
 if not terminarz.empty:
-    st.subheader(f"Najbliższe mecze: {liga_nazwa}")
+    st.subheader(f"Najbliższe mecze: {wybrana_liga}")
     
     for _, row in terminarz.iterrows():
-        with st.container():
-            col1, col2, col3 = st.columns([2, 1, 2])
+        gosp = row['Gospodarz']
+        gosc = row['Gość']
+        
+        c1, c2, c3 = st.columns([2, 1, 2])
+        p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats)
+        
+        with c1:
+            st.write(f"🏠 **{gosp}**")
+            if p_h: st.metric("Wygrana", f"{p_h*100:.1f}%")
+        with c2:
+            st.caption(row['Data'])
+            if p_d: st.metric("Remis", f"{p_d*100:.1f}%")
+        with c3:
+            st.write(f"✈️ **{gosc}**")
+            if p_a: st.metric("Wygrana", f"{p_a*100:.1f}%")
             
-            p_h, p_d, p_a = model_poisson(row['Home'], row['Away'], stats)
-            
-            with col1:
-                st.write(f"**{row['Home']}**")
-                if p_h: st.caption(f"Szansa: {p_h*100:.0f}%")
-            
-            with col2:
-                st.write(f"vs")
-                st.caption(f"{row['Date']}")
-            
-            with col3:
-                st.write(f"**{row['Away']}**")
-                if p_a: st.caption(f"Szansa: {p_a*100:.0f}%")
-            
-            if p_h:
-                st.progress(p_h)
-            st.divider()
+        if p_h is None:
+            st.warning(f"Brak danych historycznych dla tych nazw: {gosp} / {gosc}. Konieczne mapowanie.")
+        st.divider()
 else:
-    st.error("Nie udało się pobrać terminarza. Spróbuj wybrać inną ligę lub sprawdź połączenie.")
-
-st.info("💡 Uwaga: Nazwy drużyn w terminarzu i statystykach mogą się różnić (np. 'Man Utd' vs 'Manchester United'). W takim przypadku model wymaga mapowania nazw.")
+    st.info("Brak zaplanowanych meczów w najbliższym czasie lub limit API został wyczerpany (10/minutę).")
