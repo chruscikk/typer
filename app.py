@@ -4,7 +4,7 @@ import requests
 import datetime
 from scipy.stats import poisson
 
-st.set_page_config(page_title="Dzisiejsze Mecze - Typy Live", page_icon="⚽", layout="centered")
+st.set_page_config(page_title="Typy Piłkarskie - Archiwum i Live", page_icon="📅", layout="centered")
 
 try:
     API_KEY = st.secrets["API_KEY"]
@@ -21,10 +21,12 @@ LIGI_NAZWY = {
     "FL1": "🇫🇷 Ligue 1"
 }
 
-@st.cache_data(ttl=60) # Odświeżamy częściej (co 60 sekund), żeby mieć aktualne wyniki na żywo!
-def pobierz_mecze_na_dzis():
-    dzis = datetime.date.today().strftime('%Y-%m-%d')
-    url = f"http://api.football-data.org/v4/matches?dateFrom={dzis}&dateTo={dzis}"
+# --- FUNKCJE ---
+
+@st.cache_data(ttl=60)
+def pobierz_mecze(data_str):
+    # Parametryzujemy URL tak, aby API zwracało mecze dla wybranej daty
+    url = f"http://api.football-data.org/v4/matches?dateFrom={data_str}&dateTo={data_str}"
     headers = {"X-Auth-Token": API_KEY}
     response = requests.get(url, headers=headers)
     
@@ -65,18 +67,27 @@ def oblicz_poissona(home, away, df):
             else: p_d += p
     return p_h, p_d, p_a
 
-st.title("📅 Dashboard Piłkarski LIVE")
-dzis_str = datetime.date.today().strftime('%d.%m.%Y')
-st.markdown(f"**Mecze i weryfikacja typów na dzień:** {dzis_str}")
+# --- INTERFEJS UŻYTKOWNIKA ---
+
+st.title("📅 Dashboard Piłkarski: Wyniki i Typy")
+
+# Dodajemy interaktywny wybór daty
+col1, col2 = st.columns([1, 2])
+with col1:
+    wybrana_data = st.date_input("Wybierz datę do analizy:", datetime.date.today())
+    data_str = wybrana_data.strftime('%Y-%m-%d')
+    data_wyswietlana = wybrana_data.strftime('%d.%m.%Y')
+
+st.markdown(f"**Rozkład jazdy i weryfikacja typów na dzień:** {data_wyswietlana}")
 
 with st.spinner('Pobieranie aktualnych wyników i statystyk...'):
-    wszystkie_mecze = pobierz_mecze_na_dzis()
+    wszystkie_mecze = pobierz_mecze(data_str)
     stats = pobierz_wszystkie_statystyki()
 
 mecze_top5 = [m for m in wszystkie_mecze if m['competition']['code'] in LIGI_KODY.keys()]
 
 if not mecze_top5:
-    st.info("Dzisiaj nie gra żadna z topowych 5 lig europejskich.")
+    st.info(f"Dnia {data_wyswietlana} nie ma żadnych meczów w topowych 5 ligach europejskich (lub trwa przerwa reprezentacyjna).")
 else:
     mecze_po_lidze = {}
     for m in mecze_top5:
@@ -101,40 +112,33 @@ else:
             
             p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats[kod_ligi])
             
-            # 1. Określanie typu modelu (co ma najwyższy %)
             typ_modelu = None
             if p_h is not None:
                 if p_h > p_d and p_h > p_a: typ_modelu = '1'
                 elif p_a > p_h and p_a > p_d: typ_modelu = '2'
                 else: typ_modelu = 'X'
 
-            # 2. Status meczu i sprawdzanie typu
             srodek_ekranu = f"<div style='text-align: center; color: gray; margin-top: 5px;'>{czas_startu}</div>"
             znaczek_trafnosci = ""
 
             if status in ['IN_PLAY', 'PAUSED', 'FINISHED'] and gole_dom is not None and gole_wyjazd is not None:
-                # Ustalenie bieżącego wyniku na boisku
                 if gole_dom > gole_wyjazd: obecny_wynik = '1'
                 elif gole_dom < gole_wyjazd: obecny_wynik = '2'
                 else: obecny_wynik = 'X'
                 
-                # Ustalanie etykiety statusu
                 if status == 'FINISHED':
                     etykieta = "<span style='color: gray; font-size: 12px;'>Koniec</span>"
-                    # Weryfikacja typu
                     if typ_modelu == obecny_wynik:
                         znaczek_trafnosci = "✅ <span style='color: #4CAF50; font-size: 14px;'>Typ Trafiony!</span>"
                     else:
                         znaczek_trafnosci = "❌ <span style='color: #F44336; font-size: 14px;'>Typ Nietrafiony</span>"
                 else:
                     etykieta = "<span style='color: red; font-size: 12px; font-weight: bold;'>Na żywo</span>"
-                    # Na żywo - czy typ aktualnie "wchodzi"
                     if typ_modelu == obecny_wynik:
                         znaczek_trafnosci = "⏳ <span style='color: #FFC107; font-size: 14px;'>Typ aktualnie wchodzi...</span>"
                     else:
                         znaczek_trafnosci = "⏳ <span style='color: gray; font-size: 14px;'>Typ na razie przegrywa...</span>"
 
-                # Podmiana środka ekranu na wynik meczu
                 srodek_ekranu = f"""
                 <div style='text-align: center;'>
                     <span style='font-size: 24px; font-weight: bold;'>{gole_dom} - {gole_wyjazd}</span><br>
@@ -142,7 +146,6 @@ else:
                 </div>
                 """
 
-            # 3. Rysowanie interfejsu (Karty Meczowe)
             with st.container():
                 col1, col2, col3 = st.columns([3, 2, 3])
                 with col1:
@@ -153,7 +156,6 @@ else:
                     st.markdown(f"<h4>{gosc}</h4>", unsafe_allow_html=True)
                     
                 if p_h is not None:
-                    # Dodanie pogrubienia dla najwyższego prawdopodobieństwa (naszego typu)
                     waga_1 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '1' else ""
                     waga_x = "font-weight: bold; text-decoration: underline;" if typ_modelu == 'X' else ""
                     waga_2 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '2' else ""
