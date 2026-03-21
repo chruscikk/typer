@@ -1,112 +1,137 @@
 import streamlit as st
 import pandas as pd
 import requests
+import datetime
 from scipy.stats import poisson
 
-st.set_page_config(page_title="Pro Typy Piłkarskie", page_icon="⚽", layout="wide")
+# Zmiana layoutu na jeszcze szerszy, żeby mecze wyglądały lepiej
+st.set_page_config(page_title="Dzisiejsze Mecze - Typy", page_icon="⚽", layout="centered")
 
-# Bezpieczne pobieranie klucza API z ustawień Streamlit
+# Bezpieczne pobieranie klucza API
 try:
     API_KEY = st.secrets["API_KEY"]
 except KeyError:
-    st.error("Brak klucza API! Skonfiguruj 'Secrets' w ustawieniach Streamlit.")
+    st.error("Brak klucza API! Uzupełnij 'Secrets' na Streamlit Cloud.")
     st.stop()
 
-# Konfiguracja lig (Kody dla API oraz kody dla CSV)
-LIGI = {
-    "Premier League": {"api": "PL", "csv": "E0"},
-    "La Liga": {"api": "PD", "csv": "SP1"},
-    "Bundesliga": {"api": "BL1", "csv": "D1"},
-    "Serie A": {"api": "SA", "csv": "I1"},
-    "Ligue 1": {"api": "FL1", "csv": "F1"}
+# Konfiguracja lig
+LIGI_KODY = {"PL": "E0", "PD": "SP1", "BL1": "D1", "SA": "I1", "FL1": "F1"}
+LIGI_NAZWY = {
+    "PL": "🇬🇧 Premier League", 
+    "PD": "🇪🇸 La Liga", 
+    "BL1": "🇩🇪 Bundesliga", 
+    "SA": "🇮🇹 Serie A", 
+    "FL1": "🇫🇷 Ligue 1"
 }
 
-# --- FUNKCJE DANYCH ---
+# --- POBIERANIE DANYCH ---
 
-@st.cache_data(ttl=3600) # Odświeżaj terminarz raz na godzinę
-def pobierz_terminarz_api(kod_api):
-    url = f"http://api.football-data.org/v4/competitions/{kod_api}/matches?status=SCHEDULED"
+@st.cache_data(ttl=3600)
+def pobierz_mecze_na_dzis():
+    dzis = datetime.date.today().strftime('%Y-%m-%d')
+    # Jedno zapytanie pobiera wszystkie mecze na świecie z danego dnia!
+    url = f"http://api.football-data.org/v4/matches?dateFrom={dzis}&dateTo={dzis}"
     headers = {"X-Auth-Token": API_KEY}
-    
     response = requests.get(url, headers=headers)
+    
     if response.status_code == 200:
-        dane = response.json()
-        mecze = []
-        for match in dane.get('matches', [])[:10]: # Bierzemy 10 najbliższych
-            mecze.append({
-                'Data': match['utcDate'][:10],
-                'Gospodarz': match['homeTeam']['shortName'], # shortName daje lepsze dopasowanie do statystyk
-                'Gość': match['awayTeam']['shortName']
-            })
-        return pd.DataFrame(mecze)
-    return pd.DataFrame()
+        return response.json().get('matches', [])
+    return []
 
-@st.cache_data(ttl=86400) # Statystyki raz na dzień
-def pobierz_statystyki(kod_csv):
-    url = f"https://www.football-data.co.uk/mmz4281/2324/{kod_csv}.csv"
-    df = pd.read_csv(url)
-    return df[['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']]
+@st.cache_data(ttl=86400)
+def pobierz_wszystkie_statystyki():
+    stats = {}
+    # Pobieramy historię dla wszystkich 5 lig na raz przy starcie aplikacji
+    for api_kod, csv_kod in LIGI_KODY.items():
+        url = f"https://www.football-data.co.uk/mmz4281/2324/{csv_kod}.csv"
+        try:
+            df = pd.read_csv(url)
+            stats[api_kod] = df[['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']]
+        except:
+            stats[api_kod] = pd.DataFrame()
+    return stats
 
 def oblicz_poissona(home, away, df):
-    try:
-        avg_h = df['FTHG'].mean()
-        avg_a = df['FTAG'].mean()
-        
-        # Zabezpieczenie na wypadek, gdy nazwa z API różni się od tej z CSV
-        if home not in df['HomeTeam'].values or away not in df['AwayTeam'].values:
-            return None, None, None
-
-        h_at = df[df['HomeTeam'] == home]['FTHG'].mean() / avg_h
-        h_def = df[df['HomeTeam'] == home]['FTAG'].mean() / avg_a
-        a_at = df[df['AwayTeam'] == away]['FTAG'].mean() / avg_a
-        a_def = df[df['AwayTeam'] == away]['FTHG'].mean() / avg_h
-        
-        exp_h = h_at * a_def * avg_h
-        exp_a = a_at * h_def * avg_a
-        
-        p_h, p_a, p_d = 0, 0, 0
-        for i in range(7):
-            for j in range(7):
-                p = poisson.pmf(i, exp_h) * poisson.pmf(j, exp_a)
-                if i > j: p_h += p
-                elif i < j: p_a += p
-                else: p_d += p
-        return p_h, p_d, p_a
-    except:
+    # Zabezpieczenie przed brakiem danych
+    if df.empty or home not in df['HomeTeam'].values or away not in df['AwayTeam'].values:
         return None, None, None
-
-# --- UI ---
-st.title("📅 Terminarz i Typy (Powered by API)")
-
-wybrana_liga = st.sidebar.selectbox("Wybierz ligę:", list(LIGI.keys()))
-kody = LIGI[wybrana_liga]
-
-with st.spinner('Pobieranie danych z serwerów...'):
-    terminarz = pobierz_terminarz_api(kody['api'])
-    stats = pobierz_statystyki(kody['csv'])
-
-if not terminarz.empty:
-    st.subheader(f"Najbliższe mecze: {wybrana_liga}")
+        
+    avg_h, avg_a = df['FTHG'].mean(), df['FTAG'].mean()
+    h_at = df[df['HomeTeam'] == home]['FTHG'].mean() / avg_h
+    h_def = df[df['HomeTeam'] == home]['FTAG'].mean() / avg_a
+    a_at = df[df['AwayTeam'] == away]['FTAG'].mean() / avg_a
+    a_def = df[df['AwayTeam'] == away]['FTHG'].mean() / avg_h
     
-    for _, row in terminarz.iterrows():
-        gosp = row['Gospodarz']
-        gosc = row['Gość']
-        
-        c1, c2, c3 = st.columns([2, 1, 2])
-        p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats)
-        
-        with c1:
-            st.write(f"🏠 **{gosp}**")
-            if p_h: st.metric("Wygrana", f"{p_h*100:.1f}%")
-        with c2:
-            st.caption(row['Data'])
-            if p_d: st.metric("Remis", f"{p_d*100:.1f}%")
-        with c3:
-            st.write(f"✈️ **{gosc}**")
-            if p_a: st.metric("Wygrana", f"{p_a*100:.1f}%")
-            
-        if p_h is None:
-            st.warning(f"Brak danych historycznych dla tych nazw: {gosp} / {gosc}. Konieczne mapowanie.")
-        st.divider()
+    exp_h, exp_a = h_at * a_def * avg_h, a_at * h_def * avg_a
+    
+    p_h, p_a, p_d = 0, 0, 0
+    for i in range(7):
+        for j in range(7):
+            p = poisson.pmf(i, exp_h) * poisson.pmf(j, exp_a)
+            if i > j: p_h += p
+            elif i < j: p_a += p
+            else: p_d += p
+    return p_h, p_d, p_a
+
+# --- INTERFEJS UŻYTKOWNIKA ---
+
+st.title("📅 Dzisiejsze Mecze Top 5 Lig")
+dzis_str = datetime.date.today().strftime('%d.%m.%Y')
+st.markdown(f"**Rozkład jazdy na:** {dzis_str}")
+
+with st.spinner('Trwa skanowanie serwerów w poszukiwaniu meczów...'):
+    wszystkie_mecze = pobierz_mecze_na_dzis()
+    stats = pobierz_wszystkie_statystyki()
+
+# Wyciągamy tylko mecze z interesujących nas 5 lig
+mecze_top5 = [m for m in wszystkie_mecze if m['competition']['code'] in LIGI_KODY.keys()]
+
+if not mecze_top5:
+    st.info("Dzisiaj nie gra żadna z topowych 5 lig europejskich (lub API nie udostępnia spotkań).")
 else:
-    st.info("Brak zaplanowanych meczów w najbliższym czasie lub limit API został wyczerpany (10/minutę).")
+    # Grupowanie meczów po lidze, żeby ładnie je wyświetlić
+    mecze_po_lidze = {}
+    for m in mecze_top5:
+        kod_ligi = m['competition']['code']
+        if kod_ligi not in mecze_po_lidze:
+            mecze_po_lidze[kod_ligi] = []
+        mecze_po_lidze[kod_ligi].append(m)
+
+    # Rysowanie sekcji dla każdej ligi z osobna
+    for kod_ligi, lista_meczow in mecze_po_lidze.items():
+        st.write("") # Odstęp
+        st.subheader(LIGI_NAZWY[kod_ligi])
+        
+        for mecz in lista_meczow:
+            gosp = mecz['homeTeam']['shortName']
+            gosc = mecz['awayTeam']['shortName']
+            
+            # Pobranie samej godziny (np. z "2024-03-21T20:00:00Z" robi "20:00")
+            czas = mecz['utcDate'][11:16] 
+            
+            p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats[kod_ligi])
+            
+            with st.container():
+                # Układ: Gospodarz (po prawej), Godzina (środek), Gość (po lewej)
+                col1, col2, col3 = st.columns([3, 1, 3])
+                with col1:
+                    st.markdown(f"<h4 style='text-align: right;'>{gosp}</h4>", unsafe_allow_html=True)
+                with col2:
+                    st.markdown(f"<div style='text-align: center; color: gray; margin-top: 5px;'>{czas}</div>", unsafe_allow_html=True)
+                with col3:
+                    st.markdown(f"<h4>{gosc}</h4>", unsafe_allow_html=True)
+                    
+                # Wyniki prawdopodobieństwa na ładnym, jednolitym pasku
+                if p_h is not None:
+                    st.markdown(f"""
+                    <div style='display: flex; justify-content: space-around; font-size: 16px; background-color: #1e1e1e; color: white; padding: 10px; border-radius: 8px; margin-bottom: 25px;'>
+                        <div><b>1:</b> <span style='color: #4CAF50;'>{p_h*100:.0f}%</span></div>
+                        <div><b>X:</b> <span style='color: #FFC107;'>{p_d*100:.0f}%</span></div>
+                        <div><b>2:</b> <span style='color: #F44336;'>{p_a*100:.0f}%</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown("""
+                    <div style='text-align: center; font-size: 12px; color: gray; margin-bottom: 25px;'>
+                        Wymagane zmapowanie nazw drużyn (brak statystyk).
+                    </div>""", unsafe_allow_html=True)
