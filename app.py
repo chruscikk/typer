@@ -25,14 +25,15 @@ LIGI_NAZWY = {
 
 @st.cache_data(ttl=60)
 def pobierz_mecze(data_str):
-    url = f"http://api.football-data.org/v4/matches?dateFrom={data_str}&dateTo={data_str}"
+    # DODANA ZMIANA: competitions=PL,PD,BL1,SA,FL1
+    # Dzięki temu API od razu filtruje i nie obcina naszych meczów!
+    url = f"http://api.football-data.org/v4/matches?competitions=PL,PD,BL1,SA,FL1&dateFrom={data_str}&dateTo={data_str}"
     headers = {"X-Auth-Token": API_KEY}
     response = requests.get(url, headers=headers)
     
     if response.status_code == 200:
         return response.json().get('matches', [])
     elif response.status_code == 429:
-        # Kod 429 oznacza, że przekroczono darmowy limit API
         return "LIMIT"
     return []
 
