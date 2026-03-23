@@ -136,29 +136,25 @@ else:
             else:
                 srodek_ekranu = f"<div style='font-size: 16px; color: #bbb;'>{czas_startu}</div>"
 
-            # Generowanie paska z procentami
+            # Generowanie paska z procentami (PRZYSUNIĘTE DO LEWEJ - brak wcięć ratuje sytuację)
             if p_h is not None:
-                pasek_html = f"""
-                <div style="display: flex; justify-content: space-around; align-items: center; background-color: #1a1a24; padding: 10px; border-radius: 8px; font-size: 14px; margin-top: 10px;">
-                    <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='1' else 'color: #aaa;'}">1: <span style="color: #4CAF50;">{p_h*100:.0f}%</span></div>
-                    <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='X' else 'color: #aaa;'}">X: <span style="color: #FFC107;">{p_d*100:.0f}%</span></div>
-                    <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='2' else 'color: #aaa;'}">2: <span style="color: #F44336;">{p_a*100:.0f}%</span></div>
-                    <div style="margin-left: 10px; font-size: 16px;">{znaczek_trafnosci}</div>
-                </div>
-                """
+                pasek_html = f"""<div style="display: flex; justify-content: space-around; align-items: center; background-color: #1a1a24; padding: 10px; border-radius: 8px; font-size: 14px; margin-top: 10px;">
+<div style="{'font-weight: bold; color: #fff;' if typ_modelu=='1' else 'color: #aaa;'}">1: <span style="color: #4CAF50;">{p_h*100:.0f}%</span></div>
+<div style="{'font-weight: bold; color: #fff;' if typ_modelu=='X' else 'color: #aaa;'}">X: <span style="color: #FFC107;">{p_d*100:.0f}%</span></div>
+<div style="{'font-weight: bold; color: #fff;' if typ_modelu=='2' else 'color: #aaa;'}">2: <span style="color: #F44336;">{p_a*100:.0f}%</span></div>
+<div style="margin-left: 10px; font-size: 16px;">{znaczek_trafnosci}</div>
+</div>"""
             else:
                 pasek_html = "<div style='text-align: center; font-size: 11px; color: #888; padding: 5px; margin-top: 5px;'>Brak statystyk (wymagane zmapowanie nazw)</div>"
 
-            # GŁÓWNA ZMIANA: Karta meczu napisana w czystym HTML/CSS z wymuszonym układem poziomym (flex-direction: row)
-            karta_meczu = f"""
-            <div style="background-color: #2b2b36; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
-                <div style="display: flex; flex-direction: row; justify-content: space-between; align-items: center;">
-                    <div style="flex: 1; text-align: right; font-size: 15px; font-weight: bold; color: white;">{gosp}</div>
-                    <div style="flex: 1; text-align: center;">{srodek_ekranu}</div>
-                    <div style="flex: 1; text-align: left; font-size: 15px; font-weight: bold; color: white;">{gosc}</div>
-                </div>
-                {pasek_html}
-            </div>
-            """
+            # GŁÓWNA KARTA (PRZYSUNIĘTA DO LEWEJ)
+            karta_meczu = f"""<div style="background-color: #2b2b36; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
+<div style="display: flex; flex-direction: row; justify-content: space-between; align-items: center;">
+<div style="flex: 1; text-align: right; font-size: 15px; font-weight: bold; color: white;">{gosp}</div>
+<div style="flex: 1; text-align: center;">{srodek_ekranu}</div>
+<div style="flex: 1; text-align: left; font-size: 15px; font-weight: bold; color: white;">{gosc}</div>
+</div>
+{pasek_html}
+</div>"""
             
             st.markdown(karta_meczu, unsafe_allow_html=True)
