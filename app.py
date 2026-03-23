@@ -63,7 +63,7 @@ def mapuj_nazwe(nazwa_z_api):
 
 @st.cache_data(ttl=60)
 def pobierz_mecze(data_str):
-    url = f"http://api.football-data.org/v4/matches?competitions=PL,PD,BL1,SA,FL1&dateFrom={data_str}&dateTo={data_str}"
+    url = f"https://api.football-data.org/v4/matches?competitions=PL,PD,BL1,SA,FL1&dateFrom={data_str}&dateTo={data_str}"
     headers = {"X-Auth-Token": API_KEY}
     response = requests.get(url, headers=headers)
     
