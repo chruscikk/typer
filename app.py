@@ -4,9 +4,10 @@ import requests
 import datetime
 from scipy.stats import poisson
 
-# Ustawienia strony - layout "centered" jest lepszy dla telefonów
-st.set_page_config(page_title="Typy Piłkarskie - Mobile", page_icon="📱", layout="centered")
+# Ustawienia strony - layout "centered" jest idealny dla telefonów i PC
+st.set_page_config(page_title="Dashboard Typerski", page_icon="⚽", layout="centered")
 
+# Bezpieczne pobieranie klucza API
 try:
     API_KEY = st.secrets["API_KEY"]
 except KeyError:
@@ -22,7 +23,43 @@ LIGI_NAZWY = {
     "FL1": "🇫🇷 Ligue 1"
 }
 
-# --- FUNKCJE ---
+# --- SŁOWNIK MAPUJĄCY NAZWY DRUŻYN (API -> CSV) ---
+# Jeśli jakaś drużyna ma "Brak statystyk", dopisz ją tutaj: "Nazwa z API" : "Nazwa z CSV"
+MAPOWANIE = {
+    "Spurs": "Tottenham",
+    "Nottm Forest": "Nott'm Forest",
+    "Sheffield Utd": "Sheffield United",
+    "Man United": "Man United", 
+    "Man City": "Man City",
+    "Newcastle": "Newcastle",
+    "Wolves": "Wolves",
+    "Brighton": "Brighton",
+    "Barça": "Barcelona",
+    "Atlético": "Ath Madrid",
+    "Real Madrid": "Real Madrid",
+    "Athletic": "Ath Bilbao",
+    "Betis": "Betis",
+    "Sociedad": "Sociedad",
+    "Alavés": "Alaves",
+    "Bayern": "Bayern Munich",
+    "Leverkusen": "Bayer Leverkusen",
+    "M'gladbach": "M'gladbach",
+    "Dortmund": "Dortmund",
+    "RB Leipzig": "RB Leipzig",
+    "Frankfurt": "Ein Frankfurt",
+    "Juve": "Juventus",
+    "Inter": "Inter",
+    "Milan": "Milan",
+    "Roma": "Roma",
+    "PSG": "Paris SG",
+    "Marseille": "Marseille",
+    "Lyon": "Lyon"
+}
+
+def mapuj_nazwe(nazwa_z_api):
+    return MAPOWANIE.get(nazwa_z_api, nazwa_z_api)
+
+# --- FUNKCJE POBIERANIA DANYCH ---
 
 @st.cache_data(ttl=60)
 def pobierz_mecze(data_str):
@@ -40,7 +77,7 @@ def pobierz_mecze(data_str):
 def pobierz_wszystkie_statystyki():
     stats = {}
     for api_kod, csv_kod in LIGI_KODY.items():
-        # Używamy sezonu 25/26 (kod 2526) 
+        # Używamy najnowszego sezonu 25/26 
         url = f"https://www.football-data.co.uk/mmz4281/2526/{csv_kod}.csv"
         try:
             df = pd.read_csv(url)
@@ -49,7 +86,10 @@ def pobierz_wszystkie_statystyki():
             stats[api_kod] = pd.DataFrame()
     return stats
 
-def oblicz_poissona(home, away, df):
+def oblicz_poissona(home_api, away_api, df):
+    home = mapuj_nazwe(home_api)
+    away = mapuj_nazwe(away_api)
+    
     if df.empty or home not in df['HomeTeam'].values or away not in df['AwayTeam'].values:
         return None, None, None
         
@@ -77,7 +117,6 @@ st.title("⚽ Dashboard Typerski")
 wybrana_data = st.date_input("Wybierz datę do analizy:", datetime.date.today())
 data_str = wybrana_data.strftime('%Y-%m-%d')
 
-# Dodajemy opcję debugowania dla użytkownika
 debug_mode = st.checkbox("🔧 Tryb diagnostyczny (zobacz surowe dane API)")
 
 with st.spinner('Pobieranie wyników i obliczanie szans...'):
@@ -85,13 +124,13 @@ with st.spinner('Pobieranie wyników i obliczanie szans...'):
     stats = pobierz_wszystkie_statystyki()
 
 if debug_mode:
-    st.warning("Poniżej znajdują się surowe dane, które dostarcza API (jeśli jest tu mało meczów, wina leży po stronie terminarza/API):")
+    st.warning("Surowe dane zwrócone przez API dla tej daty:")
     st.write(wszystkie_mecze)
 
 if wszystkie_mecze == "LIMIT":
-    st.error("⚠️ Przekroczono limit zapytań API (10/min). Odczekaj chwilę i odśwież stronę.")
+    st.error("⚠️ Przekroczono limit zapytań API (10 kliknięć/min). Odczekaj 60 sekund i odśwież stronę.")
 elif not wszystkie_mecze:
-    st.info("W tym dniu API nie zwróciło żadnych meczów dla Top 5 lig.")
+    st.info("W tym dniu API nie zwróciło żadnych meczów dla Top 5 lig (prawdopodobnie przerwa reprezentacyjna lub środek tygodnia).")
 else:
     mecze_po_lidze = {}
     for m in wszystkie_mecze:
@@ -109,12 +148,11 @@ else:
             status = mecz['status'] 
             czas_startu = mecz['utcDate'][11:16]
             
-            gole_dom = mecz['score']['fullTime'].get('home') if mecz.get('score') and mecz.get('score').get('fullTime') else None
-            gole_wyjazd = mecz['score']['fullTime'].get('away') if mecz.get('score') and mecz.get('score').get('fullTime') else None
+            gole_dom = mecz['score']['fullTime'].get('home') if mecz.get('score') and mecz.get('score').get('fullTime') is not None else None
+            gole_wyjazd = mecz['score']['fullTime'].get('away') if mecz.get('score') and mecz.get('score').get('fullTime') is not None else None
             
             p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats.get(kod_ligi, pd.DataFrame()))
             
-            # Weryfikacja typu
             typ_modelu = None
             if p_h is not None:
                 if p_h > p_d and p_h > p_a: typ_modelu = '1'
@@ -136,8 +174,8 @@ else:
             else:
                 srodek_ekranu = f"<div style='font-size: 16px; color: #bbb;'>{czas_startu}</div>"
 
-            # Generowanie paska z procentami (PRZYSUNIĘTE DO LEWEJ - brak wcięć ratuje sytuację)
             if p_h is not None:
+                # Kod HTML przysunięty maksymalnie do lewej krawędzi, aby uniknąć pomyłki ze strony języka Markdown
                 pasek_html = f"""<div style="display: flex; justify-content: space-around; align-items: center; background-color: #1a1a24; padding: 10px; border-radius: 8px; font-size: 14px; margin-top: 10px;">
 <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='1' else 'color: #aaa;'}">1: <span style="color: #4CAF50;">{p_h*100:.0f}%</span></div>
 <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='X' else 'color: #aaa;'}">X: <span style="color: #FFC107;">{p_d*100:.0f}%</span></div>
@@ -145,9 +183,9 @@ else:
 <div style="margin-left: 10px; font-size: 16px;">{znaczek_trafnosci}</div>
 </div>"""
             else:
-                pasek_html = "<div style='text-align: center; font-size: 11px; color: #888; padding: 5px; margin-top: 5px;'>Brak statystyk (wymagane zmapowanie nazw)</div>"
+                # Wyświetlamy dokładnie jakich nazw z API brakuje w statystykach, co ułatwi dodawanie do słownika
+                pasek_html = f"<div style='text-align: center; font-size: 11px; color: #888; padding: 5px; margin-top: 5px;'>Brak statystyk (Dodaj do słownika linijkę: \"{gosp}\" lub \"{gosc}\")</div>"
 
-            # GŁÓWNA KARTA (PRZYSUNIĘTA DO LEWEJ)
             karta_meczu = f"""<div style="background-color: #2b2b36; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
 <div style="display: flex; flex-direction: row; justify-content: space-between; align-items: center;">
 <div style="flex: 1; text-align: right; font-size: 15px; font-weight: bold; color: white;">{gosp}</div>
