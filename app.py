@@ -4,7 +4,8 @@ import requests
 import datetime
 from scipy.stats import poisson
 
-st.set_page_config(page_title="Typy Piłkarskie - Archiwum i Live", page_icon="📅", layout="centered")
+# Ustawienia strony - layout "centered" jest lepszy dla telefonów
+st.set_page_config(page_title="Typy Piłkarskie - Mobile", page_icon="📱", layout="centered")
 
 try:
     API_KEY = st.secrets["API_KEY"]
@@ -25,8 +26,6 @@ LIGI_NAZWY = {
 
 @st.cache_data(ttl=60)
 def pobierz_mecze(data_str):
-    # DODANA ZMIANA: competitions=PL,PD,BL1,SA,FL1
-    # Dzięki temu API od razu filtruje i nie obcina naszych meczów!
     url = f"http://api.football-data.org/v4/matches?competitions=PL,PD,BL1,SA,FL1&dateFrom={data_str}&dateTo={data_str}"
     headers = {"X-Auth-Token": API_KEY}
     response = requests.get(url, headers=headers)
@@ -41,7 +40,7 @@ def pobierz_mecze(data_str):
 def pobierz_wszystkie_statystyki():
     stats = {}
     for api_kod, csv_kod in LIGI_KODY.items():
-        # UWAGA: Uaktualniono na bieżący sezon 25/26 (kod 2526)
+        # Używamy sezonu 25/26 (kod 2526) 
         url = f"https://www.football-data.co.uk/mmz4281/2526/{csv_kod}.csv"
         try:
             df = pd.read_csv(url)
@@ -73,119 +72,93 @@ def oblicz_poissona(home, away, df):
 
 # --- INTERFEJS UŻYTKOWNIKA ---
 
-st.title("📅 Dashboard Piłkarski: Wyniki i Typy")
+st.title("⚽ Dashboard Typerski")
 
-col1, col2 = st.columns([1, 2])
-with col1:
-    wybrana_data = st.date_input("Wybierz datę do analizy:", datetime.date.today())
-    data_str = wybrana_data.strftime('%Y-%m-%d')
-    data_wyswietlana = wybrana_data.strftime('%d.%m.%Y')
+wybrana_data = st.date_input("Wybierz datę do analizy:", datetime.date.today())
+data_str = wybrana_data.strftime('%Y-%m-%d')
 
-st.markdown(f"**Rozkład jazdy i weryfikacja typów na dzień:** {data_wyswietlana}")
+# Dodajemy opcję debugowania dla użytkownika
+debug_mode = st.checkbox("🔧 Tryb diagnostyczny (zobacz surowe dane API)")
 
-with st.spinner('Pobieranie aktualnych wyników i statystyk...'):
+with st.spinner('Pobieranie wyników i obliczanie szans...'):
     wszystkie_mecze = pobierz_mecze(data_str)
     stats = pobierz_wszystkie_statystyki()
 
-# Sprawdzanie, czy nie uderzyliśmy w ścianę (limit zapytań)
+if debug_mode:
+    st.warning("Poniżej znajdują się surowe dane, które dostarcza API (jeśli jest tu mało meczów, wina leży po stronie terminarza/API):")
+    st.write(wszystkie_mecze)
+
 if wszystkie_mecze == "LIMIT":
-    st.error("⚠️ Przekroczono limit API (10 kliknięć / minutę). Posiadasz darmowe konto. Odczekaj około 60 sekund i kliknij przycisk odświeżenia poniżej.")
-    if st.button("🔄 Odśwież i pobierz ponownie"):
-        st.cache_data.clear()
-        st.rerun()
-
+    st.error("⚠️ Przekroczono limit zapytań API (10/min). Odczekaj chwilę i odśwież stronę.")
 elif not wszystkie_mecze:
-    st.info(f"Dnia {data_wyswietlana} nie ma żadnych meczów w topowych 5 ligach europejskich.")
+    st.info("W tym dniu API nie zwróciło żadnych meczów dla Top 5 lig.")
 else:
-    mecze_top5 = [m for m in wszystkie_mecze if m['competition']['code'] in LIGI_KODY.keys()]
-    
-    if not mecze_top5:
-         st.info(f"Dnia {data_wyswietlana} odbywają się mecze, ale nie w ramach topowych 5 lig Europy.")
-    else:
-        mecze_po_lidze = {}
-        for m in mecze_top5:
-            kod_ligi = m['competition']['code']
-            if kod_ligi not in mecze_po_lidze:
-                mecze_po_lidze[kod_ligi] = []
-            mecze_po_lidze[kod_ligi].append(m)
+    mecze_po_lidze = {}
+    for m in wszystkie_mecze:
+        kod_ligi = m['competition']['code']
+        if kod_ligi not in mecze_po_lidze:
+            mecze_po_lidze[kod_ligi] = []
+        mecze_po_lidze[kod_ligi].append(m)
 
-        for kod_ligi, lista_meczow in mecze_po_lidze.items():
-            st.write("")
-            st.subheader(LIGI_NAZWY[kod_ligi])
+    for kod_ligi, lista_meczow in mecze_po_lidze.items():
+        st.markdown(f"<h3 style='margin-top: 20px; color: #4CAF50;'>{LIGI_NAZWY.get(kod_ligi, kod_ligi)}</h3>", unsafe_allow_html=True)
+        
+        for mecz in lista_meczow:
+            gosp = mecz['homeTeam']['shortName']
+            gosc = mecz['awayTeam']['shortName']
+            status = mecz['status'] 
+            czas_startu = mecz['utcDate'][11:16]
             
-            for mecz in lista_meczow:
-                gosp = mecz['homeTeam']['shortName']
-                gosc = mecz['awayTeam']['shortName']
-                status = mecz['status'] 
-                czas_startu = mecz['utcDate'][11:16]
+            gole_dom = mecz['score']['fullTime'].get('home') if mecz.get('score') and mecz.get('score').get('fullTime') else None
+            gole_wyjazd = mecz['score']['fullTime'].get('away') if mecz.get('score') and mecz.get('score').get('fullTime') else None
+            
+            p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats.get(kod_ligi, pd.DataFrame()))
+            
+            # Weryfikacja typu
+            typ_modelu = None
+            if p_h is not None:
+                if p_h > p_d and p_h > p_a: typ_modelu = '1'
+                elif p_a > p_h and p_a > p_d: typ_modelu = '2'
+                else: typ_modelu = 'X'
+
+            znaczek_trafnosci = ""
+            if status in ['IN_PLAY', 'PAUSED', 'FINISHED'] and gole_dom is not None:
+                if gole_dom > gole_wyjazd: obecny_wynik = '1'
+                elif gole_dom < gole_wyjazd: obecny_wynik = '2'
+                else: obecny_wynik = 'X'
                 
-                # Bezpieczne pobieranie wyników (czasami w API mecz ma status inny niż finished, ale nie ma goli)
-                gole_dom = mecz['score']['fullTime'].get('home') if mecz.get('score') and mecz['score'].get('fullTime') else None
-                gole_wyjazd = mecz['score']['fullTime'].get('away') if mecz.get('score') and mecz['score'].get('fullTime') else None
-                
-                p_h, p_d, p_a = oblicz_poissona(gosp, gosc, stats[kod_ligi])
-                
-                typ_modelu = None
-                if p_h is not None:
-                    if p_h > p_d and p_h > p_a: typ_modelu = '1'
-                    elif p_a > p_h and p_a > p_d: typ_modelu = '2'
-                    else: typ_modelu = 'X'
+                if status == 'FINISHED':
+                    srodek_ekranu = f"<div style='font-size: 20px; font-weight: bold;'>{gole_dom} - {gole_wyjazd}</div><div style='font-size: 10px; color: #888;'>Koniec</div>"
+                    znaczek_trafnosci = "✅" if typ_modelu == obecny_wynik else "❌"
+                else:
+                    srodek_ekranu = f"<div style='font-size: 20px; font-weight: bold; color: #ff4b4b;'>{gole_dom} - {gole_wyjazd}</div><div style='font-size: 10px; color: #ff4b4b;'>Na żywo</div>"
+                    znaczek_trafnosci = "⏳"
+            else:
+                srodek_ekranu = f"<div style='font-size: 16px; color: #bbb;'>{czas_startu}</div>"
 
-                srodek_ekranu = f"<div style='text-align: center; color: gray; margin-top: 5px;'>{czas_startu}</div>"
-                znaczek_trafnosci = ""
+            # Generowanie paska z procentami
+            if p_h is not None:
+                pasek_html = f"""
+                <div style="display: flex; justify-content: space-around; align-items: center; background-color: #1a1a24; padding: 10px; border-radius: 8px; font-size: 14px; margin-top: 10px;">
+                    <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='1' else 'color: #aaa;'}">1: <span style="color: #4CAF50;">{p_h*100:.0f}%</span></div>
+                    <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='X' else 'color: #aaa;'}">X: <span style="color: #FFC107;">{p_d*100:.0f}%</span></div>
+                    <div style="{'font-weight: bold; color: #fff;' if typ_modelu=='2' else 'color: #aaa;'}">2: <span style="color: #F44336;">{p_a*100:.0f}%</span></div>
+                    <div style="margin-left: 10px; font-size: 16px;">{znaczek_trafnosci}</div>
+                </div>
+                """
+            else:
+                pasek_html = "<div style='text-align: center; font-size: 11px; color: #888; padding: 5px; margin-top: 5px;'>Brak statystyk (wymagane zmapowanie nazw)</div>"
 
-                if status in ['IN_PLAY', 'PAUSED', 'FINISHED'] and gole_dom is not None and gole_wyjazd is not None:
-                    if gole_dom > gole_wyjazd: obecny_wynik = '1'
-                    elif gole_dom < gole_wyjazd: obecny_wynik = '2'
-                    else: obecny_wynik = 'X'
-                    
-                    if status == 'FINISHED':
-                        etykieta = "<span style='color: gray; font-size: 12px;'>Koniec</span>"
-                        if typ_modelu == obecny_wynik:
-                            znaczek_trafnosci = "✅ <span style='color: #4CAF50; font-size: 14px;'>Typ Trafiony!</span>"
-                        else:
-                            znaczek_trafnosci = "❌ <span style='color: #F44336; font-size: 14px;'>Typ Nietrafiony</span>"
-                    else:
-                        etykieta = "<span style='color: red; font-size: 12px; font-weight: bold;'>Na żywo</span>"
-                        if typ_modelu == obecny_wynik:
-                            znaczek_trafnosci = "⏳ <span style='color: #FFC107; font-size: 14px;'>Typ aktualnie wchodzi...</span>"
-                        else:
-                            znaczek_trafnosci = "⏳ <span style='color: gray; font-size: 14px;'>Typ na razie przegrywa...</span>"
-
-                    srodek_ekranu = f"""
-                    <div style='text-align: center;'>
-                        <span style='font-size: 24px; font-weight: bold;'>{gole_dom} - {gole_wyjazd}</span><br>
-                        {etykieta}
-                    </div>
-                    """
-
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 3])
-                    with col1:
-                        st.markdown(f"<h4 style='text-align: right;'>{gosp}</h4>", unsafe_allow_html=True)
-                    with col2:
-                        st.markdown(srodek_ekranu, unsafe_allow_html=True)
-                    with col3:
-                        st.markdown(f"<h4>{gosc}</h4>", unsafe_allow_html=True)
-                        
-                    if p_h is not None:
-                        waga_1 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '1' else ""
-                        waga_x = "font-weight: bold; text-decoration: underline;" if typ_modelu == 'X' else ""
-                        waga_2 = "font-weight: bold; text-decoration: underline;" if typ_modelu == '2' else ""
-
-                        pasek_html = f"""
-                        <div style='display: flex; justify-content: space-between; align-items: center; background-color: #1e1e1e; color: white; padding: 10px; border-radius: 8px; margin-bottom: 25px;'>
-                            <div style='display: flex; gap: 20px; font-size: 16px;'>
-                                <div style='{waga_1}'><b>1:</b> <span style='color: #4CAF50;'>{p_h*100:.0f}%</span></div>
-                                <div style='{waga_x}'><b>X:</b> <span style='color: #FFC107;'>{p_d*100:.0f}%</span></div>
-                                <div style='{waga_2}'><b>2:</b> <span style='color: #F44336;'>{p_a*100:.0f}%</span></div>
-                            </div>
-                            <div>{znaczek_trafnosci}</div>
-                        </div>
-                        """
-                        st.markdown(pasek_html, unsafe_allow_html=True)
-                    else:
-                        st.markdown("""
-                        <div style='text-align: center; font-size: 12px; color: gray; margin-bottom: 25px;'>
-                            Brak statystyk dla tych drużyn. Wymagane mapowanie nazw.
-                        </div>""", unsafe_allow_html=True)
+            # GŁÓWNA ZMIANA: Karta meczu napisana w czystym HTML/CSS z wymuszonym układem poziomym (flex-direction: row)
+            karta_meczu = f"""
+            <div style="background-color: #2b2b36; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">
+                <div style="display: flex; flex-direction: row; justify-content: space-between; align-items: center;">
+                    <div style="flex: 1; text-align: right; font-size: 15px; font-weight: bold; color: white;">{gosp}</div>
+                    <div style="flex: 1; text-align: center;">{srodek_ekranu}</div>
+                    <div style="flex: 1; text-align: left; font-size: 15px; font-weight: bold; color: white;">{gosc}</div>
+                </div>
+                {pasek_html}
+            </div>
+            """
+            
+            st.markdown(karta_meczu, unsafe_allow_html=True)
